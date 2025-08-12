@@ -1,0 +1,6 @@
+Flask
+flask-cors
+chromadb
+google-generativeai
+python-dotenv
+gunicorn
