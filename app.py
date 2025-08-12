@@ -1,4 +1,4 @@
-# app.py (verze pro Render)
+# app.py (opravená verze pro Render)
 import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -15,31 +15,32 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# Cesta k databázi. Render vytvoří dočasné úložiště, kam se databáze nahraje.
-CHROMA_DB_PATH = "./chroma_db"
-# ZMĚŇTE PODLE VAŠÍ SKUTEČNÉ KOLEKCE
-COLLECTION_NAME = "knowledge_base" # <-- DŮLEŽITÉ: Změňte na název vaší kolekce!
+# Cesta k databázi. Musí odpovídat cestě vytvořené skriptem create_chromadb.py
+CHROMA_DB_PATH = "./db"
+# Název kolekce, jak je definován ve vašem skriptu pro vytvoření databáze
+COLLECTION_NAME = "motonsom_trips" 
 
 # --- INICIALIZACE APLIKACE ---
-
 app = Flask(__name__)
 CORS(app)
 
 model = genai.GenerativeModel('gemini-1.5-flash')
 collection = None
 
-# Pokus o připojení k databázi
+# Pokus o připojení k databázi po spuštění serveru
 try:
-    # Kontrola, zda složka existuje
+    # Kontrola, zda složka s databází existuje
     if os.path.exists(CHROMA_DB_PATH):
         client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
         collection = client.get_collection(name=COLLECTION_NAME)
         print(f"Úspěšně připojeno ke kolekci '{COLLECTION_NAME}' s {collection.count()} dokumenty.")
     else:
-        print(f"Chyba: Složka '{CHROMA_DB_PATH}' nebyla nalezena.")
+        print(f"Chyba: Složka s ChromaDB databází '{CHROMA_DB_PATH}' nebyla nalezena. Ujistěte se, že 'Build Command' na Renderu spustí 'create_chromadb.py'.")
 
 except Exception as e:
     print(f"Chyba při připojování k ChromaDB: {e}")
+    # Nastavení kolekce na None, aby se později vyvolala chyba, pokud je to potřeba
+    collection = None
 
 
 # --- DEFINICE API ENDPOINTU ---
@@ -52,50 +53,53 @@ def index():
 
 @app.route('/chat', methods=['POST'])
 def chat():
+    # Zkontrolujeme, zda je kolekce dostupná
     if not collection:
-        return jsonify({"error": "ChromaDB kolekce není k dispozici. Zkontrolujte logy serveru."}), 500
+        return jsonify({"error": "Chyba: ChromaDB kolekce není k dispozici. Zkontrolujte logy serveru."}), 500
 
+    # Získání uživatelského dotazu z JSON těla požadavku, s klíčem 'query'
     data = request.get_json()
-    user_query = data.get('message')
+    user_query = data.get('query')
 
     if not user_query:
-        return jsonify({"error": "Chybí zpráva v požadavku."}), 400
+        return jsonify({"error": "Chybí zpráva v požadavku. Očekává se klíč 'query'."}), 400
 
     print(f"Přijat dotaz: {user_query}")
 
     try:
+        # 1. Vyhledání relevantního kontextu v ChromaDB
         results = collection.query(
             query_texts=[user_query],
-            n_results=5
+            n_results=3
         )
         context_documents = results['documents'][0]
-        context = "\n\n".join(context_documents)
-    except Exception as e:
-        print(f"Chyba při dotazování do ChromaDB: {e}")
-        return jsonify({"error": "Nepodařilo se prohledat databázi znalostí."}), 500
+        context = "\n\n---\n\n".join(context_documents)
+        
+        # 2. Vytvoření promptu pro Gemini API
+        prompt = f"""
+            Jsi Profesor Nsom, laskavý a nápomocný kronikář, který odpovídá na dotazy o cestách motorkářského klubu MOTONSOM.
+            Odpovídej pouze na základě poskytnutých informací v sekci 'Kontext'. Pokud kontext neobsahuje odpověď, přiznej to a nehádej.
+            Odpovědi by měly být krátké, maximálně 3-4 věty.
+            V odpovědi na dotazy o lidech uváděj celé jméno a nick z motonsomu, pokud je k dispozici.
+            V kontextu se nachází informace o tom, co se stalo, kdy a s kým. Soustřeď se na tyto informace.
+            Vždy odpovídej v češtině.
 
-    prompt = f"""
-    Jsi AI asistent. Odpověz na otázku uživatele pouze a výhradně na základě poskytnutého kontextu.
-    Pokud odpověď v kontextu nenajdeš, upřímně napiš: "Omlouvám se, ale na tuto otázku neznám odpověď na základě dostupných informací."
-    Buď stručný a věcný.
+            Kontext:
+            {context}
 
-    --- KONTEXT ---
-    {context}
-    --- KONEC KONTEXTU ---
+            Dotaz:
+            {user_query}
+        """
 
-    OTÁZKA UŽIVATELE: {user_query}
-    """
-
-    try:
+        # 3. Volání Gemini API
         response = model.generate_content(prompt)
         bot_response = response.text
+        
     except Exception as e:
-        print(f"Chyba při volání Gemini API: {e}")
-        return jsonify({"error": "Chyba při komunikaci s AI modelem."}), 500
+        print(f"Chyba při volání Gemini API nebo dotazování ChromaDB: {e}")
+        return jsonify({"error": "Došlo k chybě při generování odpovědi."}), 500
 
     print(f"Odpověď od Gemini: {bot_response}")
 
-    return jsonify({'reply': bot_response})
-
-# Poznámka: Blok if __name__ == '__main__': zde již není potřeba,
-# protože o spuštění se stará Gunicorn na serveru Render.
+    # Vrácení odpovědi s klíčem 'response', aby odpovídal frontendu
+    return jsonify({'response': bot_response})
