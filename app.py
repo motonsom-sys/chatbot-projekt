@@ -16,7 +16,7 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # Cesta k databázi. Musí odpovídat cestě vytvořené skriptem create_chromadb.py
-CHROMA_DB_PATH = "./chroma_db"
+CHROMA_DB_PATH = "chroma_db"
 # Název kolekce, jak je definován ve vašem skriptu pro vytvoření databáze
 COLLECTION_NAME = "vylety_kolekce" 
 
